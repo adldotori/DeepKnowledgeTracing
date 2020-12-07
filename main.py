@@ -6,13 +6,17 @@ import torch.utils.data as data
 from torchvision import datasets, transforms
 
 import pandas as pd
+import argparse
+from tqdm import tqdm
+from sklearn import metrics
+import numpy as np
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class DKT(nn.Module):
     def __init__(self, input_size, hidden_size, dropout=0.4):
         super().__init__()
-        self.seq_model = nn.RNN(input_size, hidden_size, dropout=dropout)
+        self.seq_model = nn.RNN(2 * input_size, hidden_size, dropout=dropout)
         self.decoder = nn.Sequential(
                         nn.Linear(hidden_size, input_size),
                         nn.Sigmoid(),
@@ -25,161 +29,135 @@ class DKT(nn.Module):
 
 def model_test():
     batch_size, input_size, hidden_size, seq_len = 2, 18, 200, 3
-    model = DKT(2 * input_size,hidden_size).to(device)
+    model = DKT(input_size,hidden_size).to(device)
     hidden = torch.randn(1, batch_size, hidden_size).to(device)
     data = torch.randint(0, seq_len, (1, batch_size, 2 * input_size), dtype=torch.float32).to(device)
     res = model(data, hidden)
     print(res.shape)
 
 class Dataset(data.Dataset):
-    def __init__(self):
-        self.data = []
-        max_prob = 0
-        with open('data/assistments/builder_train.csv', 'r') as f:
+    def __init__(self, mode):
+        self.data = self.read_csv(f'data/assistments/builder_{mode}.csv')
+
+    def read_csv(self, file):
+        data = []
+        self.max_prob = 0
+        self.max_sqlen = 0
+        with open(file, 'r') as f:
             while f.readline():
                 prob = [int(i) for i in f.readline().split(',')[:-1]]
                 ans = [int(i) for i in f.readline().split(',')[:-1]]
 
-                self.data.append((prob, ans))
+                data.append((prob, ans))
                 for i in prob:
-                    if max_prob < i + 1:
-                        max_prob = i + 1
-        
-        self.train_data = []
-        for prob, ans in self.data:
+                    if self.max_prob < i + 1:
+                        self.max_prob = i + 1
+                if self.max_sqlen < len(prob):
+                    self.max_sqlen = len(prob)
+
+        final_data = []
+        for prob, ans in data:
             prob = torch.tensor(prob).unsqueeze(1)
-            prob_onehot = torch.zeros(len(prob), max_prob)
+            prob_onehot = torch.zeros(self.max_sqlen, self.max_prob)
             prob_onehot.scatter_(1, prob, 1)
             for i in ans:
                 if i == 0:
-                    correct = torch.zeros(len(prob), max_prob)
+                    correct = torch.zeros(self.max_sqlen, self.max_prob)
                 else:
                     correct = prob_onehot
-            data = torch.cat([prob_onehot, correct], axis=1)
-            self.train_data.append(data)
-        
+            emb = torch.cat([prob_onehot, correct], axis=1)
+            final_data.append(emb)
+
+        return final_data
     def __getitem__(self, i):
-        return self.train_data[i]
+        return self.data[i]
 
     def __len__(self):
-        return len(self.train_data)
-        
+        return len(self.data)
+
 def data_test():
-    dataset = Dataset()
+    dataset = Dataset('train')
+    print(dataset.max_prob)
+    print(dataset.max_sqlen)
+
+class Trainer():
+    def __init__(self, args, hidden_size):
+        self.args = args
+
+        self.train_dataset = Dataset('train')
+        self.data_loader = data.DataLoader(\
+            self.train_dataset, batch_size=self.args.batch_size
+        )
+
+        self.input_size = self.train_dataset.max_prob
+        self.hidden_size = hidden_size
+
+        self.model = DKT(self.input_size, self.hidden_size).to(device)
+        self.optimizer = optim.Adam(self.model.parameters())
+        self.loss = nn.BCELoss()
+
+    def train(self):
+        for epoch in range(self.args.epoch):
+            pbar = tqdm(self.data_loader)
+            for batch in pbar:
+                data = batch.to(device).permute(1,0,2)
+                hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
+                output = self.model(data[:-1], hidden)
+                label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
+                output = torch.where(label, output, torch.tensor(0.))
+                ans = torch.where(label, data[1:,:,data.shape[2]//2:], torch.tensor(-1.))
+                loss = self.loss(output[output>0], ans[ans!=-1])
+                self.optimizer.zero_grad()
+                loss.backward()     
+                self.optimizer.step()
+
+                pbar.set_description(f'Loss : {loss:.2f}')
+        
+            torch.save(self.model.state_dict(), f'{self.args.name}.pt')
+
+    def infer(self):
+        self.model.load_state_dict(torch.load(f'{self.args.name}.pt'))
+        self.model.eval()
+
+        self.test_dataset = Dataset('test')
+        self.data_loader = torch.utils.data.DataLoader(\
+            self.test_dataset, batch_size=1
+        )
+
+        y_true = []
+        y_pred = []
+        for batch in self.data_loader:
+            data = batch.to(device).permute(1,0,2)
+            hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
+            output = self.model(data[:-1], hidden)
+            print(data.shape)
+            label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
+            print(label.shape)
+            print(data[1], label[0])
+            output = torch.where(label, output, torch.tensor(0.))
+            ans = torch.where(label, data[1:,:,data.shape[2]//2:], torch.tensor(-1.))
+            y_pred += output[output>0].data.numpy().tolist()
+            y_true += ans[ans!=-1].data.numpy().tolist()
+            print(ans[ans!=-1])
+        print(y_true[:30], y_pred[:30])
+        print(metrics.roc_auc_score(np.array(y_true), np.array(y_pred)))
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description='Trainer')
+    parser.add_argument('--name', type=str, default='base')
+    parser.add_argument('-e', '--epoch', type=int, default=5)
+    parser.add_argument('-b', '--batch_size', type=int, default=100)
+    args = parser.parse_args()
+
+    return args
+
+def train_test():
+    args = get_args()
+    trainer = Trainer(args, 200)
+    trainer.infer()
 
 if __name__ == '__main__':
     # model_test()
-    data_test()
-
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-# import os
-# import os.path as osp
-# import argparse
-# import numpy as np
-
-# from torch.utils.tensorboard import SummaryWriter
-# from torchvision.utils import make_grid
-
-# from model import *
-# from loss import *
-# from dataloader import *
-
-# def get_opt():
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('-n', '--num-workers', type=int, default = 4)
-#     parser.add_argument('-e', '--epoch', type=int, default=20)
-#     parser.add_argument('-b', '--batch-size', type=int, default = 256)
-#     parser.add_argument('-d', '--display-step', type=int, default = 500)
-#     parser.add_argument('--dataset', type=str, default = 'mnist', help='mnist or celeba')
-#     parser.add_argument('-m', '--mode', type=str, default = 'local', help='local or colab')
-#     opt = parser.parse_args()
-#     return opt
-
-# def train(opt):
-#     # Init Model
-#     generator = Generator(opt.dataset).cuda()
-#     discriminator = Discriminator(opt.dataset).cuda()
-#     discriminator.train()
-
-#     # Load Dataset
-#     dataset = Dataset(opt.dataset)
-#     data_loader = Dataloader(opt, dataset)
-
-#     # Set Optimizer
-#     optim_gen = torch.optim.Adam(generator.parameters(), lr=0.0002)
-#     optim_dis = torch.optim.Adam(discriminator.parameters(), lr=0.0001)
-
-#     # Set Loss
-#     loss = Loss()
-
-#     writer = SummaryWriter()
-
-#     if opt.mode == 'local':
-#         save_dir = 'checkpoints'
-#     elif opt.mode == 'colab':
-#         save_dir = '/content/gdrive/My Drive/checkpoints/'
-#     if not osp.isdir(save_dir):
-#         os.makedirs(save_dir)
-
-#     for epoch in range(opt.epoch):
-#         for i in range(len(data_loader.data_loader)):
-#             step = epoch * len(data_loader.data_loader) + i + 1
-#             # load dataset only batch_size
-#             image, label = data_loader.next_batch()
-#             image = image.cuda()
-#             batch_size = image.shape[0]
-
-#             # train discriminator
-#             optim_dis.zero_grad()
-
-#             noise = Variable(torch.randn(batch_size, 100)).cuda()
-#             gen = generator(noise)
-
-#             validity_real = discriminator(image)
-#             loss_dis_real = loss(validity_real, Variable(torch.ones(batch_size,1)).cuda())
-
-#             validity_fake = discriminator(gen.detach())
-#             loss_dis_fake = loss(validity_fake, Variable(torch.zeros(batch_size,1)).cuda())
-
-#             loss_dis = (loss_dis_real + loss_dis_fake) / 2
-#             loss_dis.backward()
-#             optim_dis.step()
-
-#             # train generator
-#             generator.train()
-#             optim_gen.zero_grad()
-
-#             noise = Variable(torch.randn(batch_size, 100)).cuda()
-            
-#             gen = generator(noise)
-#             validity = discriminator(gen)
-            
-#             loss_gen = loss(validity, Variable(torch.ones(batch_size,1)).cuda())
-#             loss_gen.backward()
-#             optim_gen.step()
-
-#             writer.add_scalar('loss/gen', loss_gen, step)
-#             writer.add_scalar('loss/dis', loss_dis, step)
-#             writer.add_scalar('loss/dis_real', loss_dis_real, step)
-#             writer.add_scalar('loss/dis_fake', loss_dis_fake, step)
-            
-#             if step % opt.display_step == 0:
-#                 writer.add_images('image', image[0][0], step, dataformats="HW")
-#                 writer.add_images('result', gen[0][0], step, dataformats="HW")
-
-#                 print('[Epoch {}] G_loss : {:.2} | D_loss : {:.2}'.format(epoch + 1, loss_gen, loss_dis))
-                
-#                 generator.eval()
-#                 z = Variable(torch.randn(9, 100)).cuda()
-#                 sample_images = generator(z)
-#                 grid = make_grid(sample_images, nrow=3, normalize=True)
-#                 writer.add_image('sample_image', grid, step)
-
-#                 torch.save(generator.state_dict(), osp.join(save_dir, 'checkpoint_{}.pt'.format(step)))
-
-# if __name__ == '__main__':
-#     # os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
-#     opt = get_opt()
-#     train(opt)
+    # data_test()
+    train_test()
