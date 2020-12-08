@@ -60,11 +60,10 @@ class Dataset(data.Dataset):
             prob = torch.tensor(prob).unsqueeze(1)
             prob_onehot = torch.zeros(self.max_sqlen, self.max_prob)
             prob_onehot.scatter_(1, prob, 1)
-            for i in ans:
-                if i == 0:
-                    correct = torch.zeros(self.max_sqlen, self.max_prob)
-                else:
-                    correct = prob_onehot
+            correct = prob_onehot.clone()
+            for i in range(len(ans)):
+                if ans[i] == 0:
+                    correct[i] = torch.zeros(self.max_prob)
             emb = torch.cat([prob_onehot, correct], axis=1)
             final_data.append(emb)
 
@@ -89,6 +88,7 @@ class Trainer():
             self.train_dataset, batch_size=self.args.batch_size
         )
 
+        self.max_sqlen = self.train_dataset.max_sqlen
         self.input_size = self.train_dataset.max_prob
         self.hidden_size = hidden_size
 
@@ -97,22 +97,28 @@ class Trainer():
         self.loss = nn.BCELoss()
 
     def train(self):
+        # self.model.load_state_dict(torch.load(f'{self.args.name}.pt'))
         for epoch in range(self.args.epoch):
             pbar = tqdm(self.data_loader)
+            loss_sum = 0
             for batch in pbar:
                 data = batch.to(device).permute(1,0,2)
                 hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
                 output = self.model(data[:-1], hidden)
+
                 label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
                 output = torch.where(label, output, torch.tensor(0.))
                 ans = torch.where(label, data[1:,:,data.shape[2]//2:], torch.tensor(-1.))
                 loss = self.loss(output[output>0], ans[ans!=-1])
+
                 self.optimizer.zero_grad()
                 loss.backward()     
                 self.optimizer.step()
 
+                loss_sum += loss
                 pbar.set_description(f'Loss : {loss:.2f}')
-        
+            
+            print(f'Loss : {loss_sum/len(self.data_loader):.2f}')
             torch.save(self.model.state_dict(), f'{self.args.name}.pt')
 
     def infer(self):
@@ -130,24 +136,63 @@ class Trainer():
             data = batch.to(device).permute(1,0,2)
             hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
             output = self.model(data[:-1], hidden)
-            print(data.shape)
             label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
-            print(label.shape)
-            print(data[1], label[0])
             output = torch.where(label, output, torch.tensor(0.))
             ans = torch.where(label, data[1:,:,data.shape[2]//2:], torch.tensor(-1.))
             y_pred += output[output>0].data.numpy().tolist()
             y_true += ans[ans!=-1].data.numpy().tolist()
-            print(ans[ans!=-1])
-        print(y_true[:30], y_pred[:30])
         print(metrics.roc_auc_score(np.array(y_true), np.array(y_pred)))
+
+    def seq_op(self, seq, length):
+        self.model.load_state_dict(torch.load(f'{self.args.name}.pt'))
+        self.model.eval()
+
+        hidden = torch.randn(1,  1, self.hidden_size).to(device)
+        
+        prob, ans = seq
+
+        for i in range(length):
+            emb = self._emb(prob, ans)
+            output = self.model(emb, hidden)
+            pred_cor = output[-1] 
+            max_reward = -1
+            max_idx = -1
+            for j in range(self.input_size):
+                emb = self._emb(prob + [j], ans + [1])
+                output = self.model(emb, hidden)
+                reward_1 = output[-1].mean()
+
+                emb = self._emb(prob + [j], ans + [0])
+                output = self.model(emb, hidden)
+                reward_0 = output[-1].mean()
+                reward = reward_1 * pred_cor[0,j] + reward_0 * (1 - pred_cor[0,j])
+                if reward > max_reward:
+                    max_reward = reward
+                    max_idx = j
+            # print(pred_cor[0,max_idx])
+            print(max_reward.data, max_idx)
+            prob = prob + [max_idx]
+            ans = ans + [1 if pred_cor[0,max_idx]>0.5 else 0]
+
+    def _emb(self, prob, ans):
+        prob = torch.tensor(prob).unsqueeze(1)
+        prob_onehot = torch.zeros(len(prob), self.input_size)
+        prob_onehot.scatter_(1, prob, 1)
+        correct = prob_onehot.clone()
+        for i in range(len(ans)):
+            if ans[i] == 0:
+                correct[i] = torch.zeros(self.input_size)
+        emb = torch.cat([prob_onehot, correct], axis=1)
+        emb.unsqueeze_(1)
+        return emb
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Trainer')
     parser.add_argument('--name', type=str, default='base')
-    parser.add_argument('-e', '--epoch', type=int, default=5)
+    parser.add_argument('-e', '--epoch', type=int, default=10)
     parser.add_argument('-b', '--batch_size', type=int, default=100)
+    parser.add_argument('-m', '--mode', type=str, default='infer')
     args = parser.parse_args()
 
     return args
@@ -155,7 +200,12 @@ def get_args():
 def train_test():
     args = get_args()
     trainer = Trainer(args, 200)
-    trainer.infer()
+    if args.mode == 'train':
+        trainer.train()
+    elif args.mode == 'infer':
+        trainer.infer()
+    elif args.mode == 'seq_op':
+        trainer.seq_op(([90,90,90,90,90,90],[1,1,0,0,1,1]), 10)
 
 if __name__ == '__main__':
     # model_test()
