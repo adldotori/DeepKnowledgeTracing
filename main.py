@@ -149,22 +149,21 @@ class Trainer():
         for i in range(length):
             emb = self._emb(prob, ans)
             output = self.model(emb)
-            pred_cor = output[-1] 
+            pred_cor = output[-1]
             max_reward = -1
             max_idx = -1
             for j in range(self.input_size):
                 emb = self._emb(prob + [j], ans + [1])
-                output = self.model(emb, hidden)
+                output = self.model(emb)
                 reward_1 = output[-1].mean()
 
                 emb = self._emb(prob + [j], ans + [0])
-                output = self.model(emb, hidden)
+                output = self.model(emb)
                 reward_0 = output[-1].mean()
                 reward = reward_1 * pred_cor[0,j] + reward_0 * (1 - pred_cor[0,j])
                 if reward > max_reward:
                     max_reward = reward
                     max_idx = j
-            # print(pred_cor[0,max_idx])
             print(max_reward.data, max_idx)
             prob = prob + [max_idx]
             ans = ans + [1 if pred_cor[0,max_idx]>0.5 else 0]
@@ -192,7 +191,7 @@ def get_args():
 
     return args
 
-def train_test():
+def main():
     args = get_args()
     trainer = Trainer(args, 200)
     if args.mode == 'train':
@@ -200,9 +199,9 @@ def train_test():
     elif args.mode == 'infer':
         trainer.infer()
     elif args.mode == 'seq_op':
-        trainer.seq_op(([90,90,90,90,90,90],[1,1,0,0,1,1]), 10)
+        trainer.seq_op(([1,1,2,2,2],[1,1,0,0,0]), 5)
 
 if __name__ == '__main__':
     # model_test()
     # data_test()
-    train_test()
+    main()
