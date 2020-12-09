@@ -14,25 +14,24 @@ import numpy as np
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class DKT(nn.Module):
-    def __init__(self, input_size, hidden_size, dropout=0.4):
+    def __init__(self, input_size, hidden_size, dropout=0.0):
         super().__init__()
-        self.seq_model = nn.RNN(2 * input_size, hidden_size, dropout=dropout)
+        self.seq_model = nn.LSTM(2 * input_size, hidden_size, num_layers=2, dropout=dropout)
         self.decoder = nn.Sequential(
                         nn.Linear(hidden_size, input_size),
                         nn.Sigmoid(),
         )
 
 
-    def forward(self, seq_in, hidden):
-        seq_out, hidden = self.seq_model(seq_in, hidden)
+    def forward(self, seq_in):
+        seq_out, hidden = self.seq_model(seq_in)
         return self.decoder(seq_out)
 
 def model_test():
     batch_size, input_size, hidden_size, seq_len = 2, 18, 200, 3
     model = DKT(input_size,hidden_size).to(device)
-    hidden = torch.randn(1, batch_size, hidden_size).to(device)
     data = torch.randint(0, seq_len, (1, batch_size, 2 * input_size), dtype=torch.float32).to(device)
-    res = model(data, hidden)
+    res = model(data)
     print(res.shape)
 
 class Dataset(data.Dataset):
@@ -103,8 +102,7 @@ class Trainer():
             loss_sum = 0
             for batch in pbar:
                 data = batch.to(device).permute(1,0,2)
-                hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
-                output = self.model(data[:-1], hidden)
+                output = self.model(data[:-1])
 
                 label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
                 output = torch.where(label, output, torch.tensor(0.))
@@ -134,8 +132,7 @@ class Trainer():
         y_pred = []
         for batch in self.data_loader:
             data = batch.to(device).permute(1,0,2)
-            hidden = torch.randn(1,  data.shape[1], self.hidden_size).to(device)
-            output = self.model(data[:-1], hidden)
+            output = self.model(data[:-1])
             label = (data[:,:,:data.shape[2]//2]==1)[1:].to(device)
             output = torch.where(label, output, torch.tensor(0.))
             ans = torch.where(label, data[1:,:,data.shape[2]//2:], torch.tensor(-1.))
@@ -146,14 +143,12 @@ class Trainer():
     def seq_op(self, seq, length):
         self.model.load_state_dict(torch.load(f'{self.args.name}.pt'))
         self.model.eval()
-
-        hidden = torch.randn(1,  1, self.hidden_size).to(device)
         
         prob, ans = seq
 
         for i in range(length):
             emb = self._emb(prob, ans)
-            output = self.model(emb, hidden)
+            output = self.model(emb)
             pred_cor = output[-1] 
             max_reward = -1
             max_idx = -1
