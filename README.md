@@ -1,11 +1,11 @@
 # DeepKnowledgeTracing
 source code for the paper Deep Knowledge Tracing. http://stanford.edu/~cpiech/bio/papers/deepKnowledgeTracing.pdf
 
-# Usage
+## Usage
 
 usage: python main.py [-m (`train`, `infer`, `seq_op`) : mode] [-e : epoch] [-b : batch_size]
 
-# Environment
+## Environment
 Hardware  
 * macOS Catalina v10.15.7
 
@@ -17,8 +17,8 @@ Framework
 * pandas 1.1.2
 * tqdm 4.54.1
 
-# Result
-## RNN
+## Result
+### RNN
 hyperparameter  
 * batch_size : `100`
 * epoch : `20`
@@ -26,7 +26,7 @@ hyperparameter
 time : 1hour  
 ROC_AUC_SCORE : **0.84347**
 
-## LSTM
+### LSTM
 hyperparameter  
 * batch_size : `100`
 * epoch : `20`
@@ -34,14 +34,14 @@ hyperparameter
 time : 6hour
 ROC_AUC_SCORE : **0.84674**
 
-## Recommend Sequence
+### Recommend Sequence
 
 mode : seq_op
 
 Example) After solving 5 problems, recommend more 5 problems
 
 prob ans  
-1 O
+1 O  
 1 O  
 2 X  
 2 X  
@@ -53,7 +53,7 @@ prob ans
 69  
 69  
 
-# Knowledge Tracing Papers Review
+### Knowledge Tracing Papers Review
 4 models : **BKT, DKT, DKTMN, SAKT**
 
 <http://ai-hub.kr/post/133/>
